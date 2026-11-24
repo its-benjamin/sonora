@@ -40,7 +40,6 @@ use crate::shared::trouble;
 const SECTION: &str = "artist";
 const RELEASE_ROWS: usize = 2;
 const LISTED: usize = 5;
-const LISTED_MAX: usize = 10;
 /// The outline of a release filter chip, above and below its label.
 const CHIP_OUTLINE: Pixels = px(1.);
 /// The favorites dialog gives two song columns enough room for titles and controls.
@@ -113,8 +112,8 @@ impl ArtistTab {
     }
 }
 
-/// The tracks the artist list shows. Popular caps the table to the rows the page draws, after
-/// sorting, so the collapsed list is the head of the expanded one; All does not cap it.
+/// The tracks the artist list shows: the provider's popular selection or every track under the
+/// artist's releases.
 struct ArtistTracks {
     detail: Entity<ArtistDetail>,
     show_all: Rc<Cell<bool>>,
@@ -125,10 +124,7 @@ impl Tracks for ArtistTracks {
         let detail = self.detail.read(cx);
         match self.show_all.get() {
             true => detail.all_tracks().into(),
-            false => {
-                let tracks = detail.tracks();
-                tracks[..LISTED_MAX.min(tracks.len())].into()
-            }
+            false => detail.tracks().into(),
         }
     }
 
@@ -159,8 +155,6 @@ pub(crate) struct ArtistView {
     about_open: bool,
     favorites_open: bool,
     table: Entity<TableState<TrackSource>>,
-    /// How many popular tracks the list shows, `LISTED` or `LISTED_MAX`.
-    shown: usize,
     mode: Mode,
     tab: ArtistTab,
     show_all: Rc<Cell<bool>>,
@@ -264,9 +258,21 @@ impl ArtistView {
                 this.about_open = false;
                 this.favorites_open = false;
                 this.rails.clear();
-                this.tab = ArtistTab::Popular;
-                this.show_all.set(false);
-                this.show(LISTED, cx);
+                let all = this.tab == ArtistTab::All;
+                this.show_all.set(all);
+                let limit = (!all).then_some(LISTED);
+                this.table.update(cx, |table, cx| {
+                    table.delegate_mut().set_limit(limit, cx);
+                });
+                if all && this.artist_id.is_some() {
+                    let view = cx.entity().downgrade();
+                    cx.defer(move |cx| {
+                        view.update(cx, |this, cx| {
+                            this.detail.update(cx, |detail, cx| detail.load_all(cx));
+                        })
+                        .ok();
+                    });
+                }
                 this.scrollbar.update(cx, |bar, cx| {
                     bar.set_max_offset(None, cx);
                     bar.scroll().set_offset(gpui::Point::default());
@@ -337,7 +343,6 @@ impl ArtistView {
             about_open: false,
             favorites_open: false,
             table,
-            shown: LISTED,
             mode,
             tab: ArtistTab::Popular,
             show_all,
@@ -374,16 +379,6 @@ impl ArtistView {
         });
     }
 
-    fn show(&mut self, count: usize, cx: &mut Context<Self>) {
-        self.shown = count;
-        if self.tab == ArtistTab::Popular {
-            self.table.update(cx, |table, cx| {
-                table.delegate_mut().set_limit(Some(count), cx);
-                cx.notify();
-            });
-        }
-    }
-
     fn set_tab(&mut self, tab: ArtistTab, cx: &mut Context<Self>) {
         if self.tab == tab {
             return;
@@ -393,7 +388,7 @@ impl ArtistView {
         if tab == ArtistTab::All {
             self.detail.update(cx, |detail, cx| detail.load_all(cx));
         }
-        let limit = (tab == ArtistTab::Popular).then_some(self.shown);
+        let limit = (tab == ArtistTab::Popular).then_some(LISTED);
         self.table.update(cx, |table, cx| {
             table.delegate_mut().set_limit(limit, cx);
             table.rebuild(cx);
@@ -1079,28 +1074,6 @@ impl ArtistView {
 
     fn listed(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
-        let expanded = self.shown > LISTED;
-        let more = (self.tab == ArtistTab::Popular && self.popular.len() > LISTED).then(|| {
-            Button::new("artist-popular-more")
-                .label(match expanded {
-                    true => t!("common-show-less"),
-                    false => t!("common-show-all"),
-                })
-                .trailing(chevron(expanded))
-                .small()
-                .ghost()
-                .aria_expanded(expanded)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.show(
-                        match expanded {
-                            true => LISTED,
-                            false => LISTED_MAX,
-                        },
-                        cx,
-                    );
-                    cx.notify();
-                }))
-        });
         let error = self.track_error(cx);
 
         div()
@@ -1114,7 +1087,6 @@ impl ArtistView {
                     .border_1()
                     .border_color(theme.border),
             )
-            .children(more)
             .into_any_element()
     }
 
@@ -1490,6 +1462,18 @@ impl Render for ArtistView {
 
         let listed = self.mode == Mode::List;
         let tab = self.tab;
+        let show_all = (tab == ArtistTab::Popular && self.popular.len() > LISTED).then(|| {
+            let me = self.me.clone();
+            Button::new("artist-popular-more")
+                .label(t!("common-show-all"))
+                .trailing(chevron(false))
+                .small()
+                .ghost()
+                .on_click(move |_, _, cx| {
+                    me.update(cx, |view, cx| view.set_tab(ArtistTab::All, cx))
+                        .ok();
+                })
+        });
         let release_padding = self.release_padding;
         let head = self.header(cx);
         let cover = theme.metrics.cover;
@@ -1544,14 +1528,21 @@ impl Render for ArtistView {
                         let label = tab.label();
                         this.child(
                             div()
-                                .id("artist-tracks-heading")
-                                .role(Role::Heading)
-                                .aria_level(2)
-                                .aria_label(label.clone())
+                                .flex()
+                                .items_center()
+                                .justify_between()
                                 .pb_3()
-                                .text_size(theme.text(Text::Title))
-                                .font_weight(FontWeight::BOLD)
-                                .child(label),
+                                .child(
+                                    div()
+                                        .id("artist-tracks-heading")
+                                        .role(Role::Heading)
+                                        .aria_level(2)
+                                        .aria_label(label.clone())
+                                        .text_size(theme.text(Text::Title))
+                                        .font_weight(FontWeight::BOLD)
+                                        .child(label),
+                                )
+                                .children(show_all),
                         )
                     }),
             )
