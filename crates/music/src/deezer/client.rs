@@ -1219,6 +1219,17 @@ impl MusicApi for DeezerClient {
         Ok(crate::artist_songs(tracks, artist_id))
     }
 
+    /// Deezer's discography listing carries each release's songs, so the page asks for it once
+    /// rather than opening every release.
+    async fn artist_all_tracks(
+        &self,
+        artist_id: &str,
+        _known: &[Track],
+        _releases: &[Album],
+    ) -> Result<Vec<Track>> {
+        self.artist_tracks(artist_id).await
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         let detail = self
             .public(&format!("/artist/{}", escape::component(artist_id)))

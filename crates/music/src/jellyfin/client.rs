@@ -832,6 +832,17 @@ impl MusicApi for JellyfinClient {
         Ok(crate::artist_songs(tracks, artist_id))
     }
 
+    /// One query answers every song Jellyfin credits to the artist, so the page does not read
+    /// each release in turn.
+    async fn artist_all_tracks(
+        &self,
+        artist_id: &str,
+        _known: &[Track],
+        _releases: &[Album],
+    ) -> Result<Vec<Track>> {
+        self.artist_tracks(artist_id).await
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         let artist = self.item_with(artist_id, ARTIST_FIELDS, "artist").await?;
         Ok(ArtistProfile {

@@ -53,6 +53,7 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::StreamExt as _;
 use jiff::fmt::temporal::DateTimeParser;
 
 pub use audio::Meter;
@@ -84,6 +85,10 @@ pub const SUGGESTIONS: usize = 10;
 
 /// The duration tolerance for recognizing the same recording across releases.
 const SAME_SONG: Duration = Duration::from_secs(5);
+
+/// How many releases an artist's whole tracklist reads at once. A prolific artist has many
+/// releases, and every read is a provider call.
+const ALBUM_READS: usize = 4;
 
 pub fn is_local_id(id: &str) -> bool {
     id.starts_with(LOCAL_TRACK_PREFIX)
@@ -173,6 +178,38 @@ pub trait MusicApi: Send + Sync {
     /// Providers extend the overview's tracks with their ranked catalogue or release order.
     async fn artist_tracks(&self, artist_id: &str) -> Result<Vec<Track>> {
         Ok(self.artist(artist_id).await?.top_tracks)
+    }
+
+    /// Every track under the artist's releases, in release order, for the artist page's
+    /// All tracks list. `known` is what the page already has, so a track the provider ranks
+    /// but no release lists is not lost; it comes after the releases. `releases` is the
+    /// discography the page already loaded, so a provider is not asked for it twice.
+    ///
+    /// The default reads each release's tracks and is therefore complete for every provider,
+    /// since `album_tracks` is required. Providers with a cheaper whole-artist listing override
+    /// it. A release that cannot be read is left out rather than failing the whole list.
+    async fn artist_all_tracks(
+        &self,
+        artist_id: &str,
+        known: &[Track],
+        releases: &[Album],
+    ) -> Result<Vec<Track>> {
+        let mut seen = HashSet::new();
+        let releases: Vec<Album> = releases
+            .iter()
+            .filter(|album| seen.insert(album.id.clone()))
+            .cloned()
+            .collect();
+        let reads: Vec<_> = futures::stream::iter(releases)
+            .map(|album| async move {
+                let tracks = self.album_tracks(&album.id).await;
+                (album, tracks)
+            })
+            .buffered(ALBUM_READS)
+            .collect()
+            .await;
+
+        collect_release_tracks(artist_id, known, reads)
     }
 
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile>;
@@ -1322,6 +1359,35 @@ pub fn iso_8601_to_epoch(value: Option<&str>) -> Option<i64> {
     Some(timestamp.as_second())
 }
 
+/// Joins what each release answered, then the tracks the page already knew, into the artist's
+/// whole tracklist. A release that could not be read is left out; only a list with nothing at
+/// all is an error.
+fn collect_release_tracks(
+    artist_id: &str,
+    known: &[Track],
+    reads: Vec<(Album, Result<Vec<Track>>)>,
+) -> Result<Vec<Track>> {
+    let mut tracks = Vec::new();
+    let mut failure: Option<anyhow::Error> = None;
+    for (album, read) in reads {
+        match read {
+            Ok(songs) => tracks.extend(songs),
+            Err(error) => {
+                log::warn!("music: cannot read the album {}: {error:#}", album.name);
+                failure.get_or_insert(error);
+            }
+        }
+    }
+    tracks.extend(known.iter().cloned());
+    let tracks = artist_songs(tracks, artist_id);
+    if tracks.is_empty()
+        && let Some(error) = failure
+    {
+        return Err(error.context("cannot load the artist's releases"));
+    }
+    Ok(tracks)
+}
+
 /// Keeps playable songs credited to the artist in their supplied order, collapsing repeat
 /// ids and matching titles of similar duration across releases. Remaster labels do not
 /// distinguish songs.
@@ -1402,6 +1468,68 @@ fn remaster_note(note: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn song(id: &str, name: &str, seconds: u64) -> Track {
+        Track {
+            id: Some(id.to_owned()),
+            name: name.to_owned(),
+            playable: true,
+            artists: "Artist".to_owned(),
+            artist_refs: vec![ArtistRef {
+                name: "Artist".to_owned(),
+                id: Some("artist".to_owned()),
+                channel: false,
+            }],
+            duration: Duration::from_secs(seconds),
+            ..Default::default()
+        }
+    }
+
+    fn release(id: &str) -> Album {
+        Album {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn release_tracks_keep_release_order_and_dedupe() {
+        let known = vec![song("top", "Top", 200)];
+        let reads = vec![
+            (
+                release("first"),
+                Ok(vec![song("one", "One", 100), song("top", "Top", 200)]),
+            ),
+            (release("second"), Ok(vec![song("two", "Two", 300)])),
+        ];
+
+        let tracks = collect_release_tracks("artist", &known, reads).unwrap();
+        let ids: Vec<_> = tracks
+            .iter()
+            .filter_map(|track| track.id.as_deref())
+            .collect();
+        assert_eq!(ids, ["one", "top", "two"]);
+    }
+
+    #[test]
+    fn a_release_that_cannot_be_read_does_not_lose_the_rest() {
+        let reads = vec![
+            (release("broken"), Err(anyhow::anyhow!("cannot read"))),
+            (release("playable"), Ok(vec![song("one", "One", 100)])),
+        ];
+
+        let tracks = collect_release_tracks("artist", &[], reads).unwrap();
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].id.as_deref(), Some("one"));
+    }
+
+    #[test]
+    fn a_tracklist_with_nothing_to_show_reports_the_release_error() {
+        let reads = vec![(release("broken"), Err(anyhow::anyhow!("cannot read")))];
+
+        assert!(collect_release_tracks("artist", &[], reads).is_err());
+    }
 
     #[test]
     fn iso_8601_to_epoch_parses_correctly() {

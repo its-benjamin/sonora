@@ -80,6 +80,7 @@ artist-followers = { $count ->
 }
 artist-popular = Popular
 artist-popular-empty = Nothing to play from this artist yet
+artist-all-tracks = All tracks
 artist-favorite-songs = Your favorite songs
 artist-favorite-songs-count = { $count ->
     [one] { $count } song in your Favorites

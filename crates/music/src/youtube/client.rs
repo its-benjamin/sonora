@@ -151,6 +151,17 @@ impl MusicApi for YouTubeClient {
         Ok(crate::artist_songs(tracks, artist_id))
     }
 
+    /// The ranked songs playlist and every album, read once for the page instead of release by
+    /// release on top of that.
+    async fn artist_all_tracks(
+        &self,
+        artist_id: &str,
+        _known: &[Track],
+        _releases: &[Album],
+    ) -> Result<Vec<Track>> {
+        self.artist_tracks(artist_id).await
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         Ok(wire::artist_profile(&self.api.artist(artist_id).await?))
     }

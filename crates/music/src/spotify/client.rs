@@ -83,6 +83,17 @@ impl MusicApi for LibrespotClient {
         artists::tracks(&self.session, artist_id).await
     }
 
+    /// Every release's tracks in one batched metadata read, so the page does not open each
+    /// release by itself.
+    async fn artist_all_tracks(
+        &self,
+        artist_id: &str,
+        _known: &[Track],
+        _releases: &[Album],
+    ) -> Result<Vec<Track>> {
+        artists::tracks(&self.session, artist_id).await
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         artists::profile(&self.session, artist_id).await
     }
