@@ -810,12 +810,7 @@ impl MusicApi for PlexClient {
 
     /// One paginated query for every track the server credits to the artist, which is cheaper
     /// than opening each of their albums.
-    async fn artist_all_tracks(
-        &self,
-        artist_id: &str,
-        _known: &[Track],
-        _releases: &[Album],
-    ) -> Result<Vec<Track>> {
+    async fn artist_all_tracks(&self, artist_id: &str, _releases: &[Album]) -> Result<Vec<Track>> {
         let tracks = self
             .listing(
                 &self.section("/all"),
@@ -825,7 +820,7 @@ impl MusicApi for PlexClient {
             .into_iter()
             .map(|item| self.track(item))
             .collect();
-        Ok(crate::artist_songs(tracks, artist_id))
+        Ok(crate::artist_tracklist(tracks, artist_id))
     }
 
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {

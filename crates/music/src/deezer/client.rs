@@ -1219,15 +1219,14 @@ impl MusicApi for DeezerClient {
         Ok(crate::artist_songs(tracks, artist_id))
     }
 
-    /// Deezer's discography listing carries each release's songs, so the page asks for it once
-    /// rather than opening every release.
-    async fn artist_all_tracks(
-        &self,
-        artist_id: &str,
-        _known: &[Track],
-        _releases: &[Album],
-    ) -> Result<Vec<Track>> {
-        self.artist_tracks(artist_id).await
+    /// Every release in turn, in release order. Deezer has no unranked whole-artist songs
+    /// listing, so the ranked top tracks stay in Popular.
+    async fn artist_all_tracks(&self, artist_id: &str, releases: &[Album]) -> Result<Vec<Track>> {
+        let releases = match releases.is_empty() {
+            true => self.artist(artist_id).await?.albums,
+            false => releases.to_vec(),
+        };
+        crate::artist_release_tracks(self, artist_id, &releases).await
     }
 
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {

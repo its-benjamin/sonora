@@ -82,6 +82,21 @@ pub async fn tracks(session: &Session, artist_id: &str) -> Result<Vec<Track>> {
     Ok(crate::artist_songs(tracks, artist_id))
 }
 
+/// Every release's tracks, without the overview's ranked rail. The All tracks view starts from
+/// the discography and keeps the provider's release order.
+pub async fn discography_tracks(
+    session: &Session,
+    artist_id: &str,
+    releases: &[Album],
+) -> Result<Vec<Track>> {
+    let releases = match releases.is_empty() {
+        true => discography(session, artist_id).await?,
+        false => releases.to_vec(),
+    };
+    let tracks = release_tracks(session, &releases).await?;
+    Ok(crate::artist_tracklist(tracks, artist_id))
+}
+
 pub async fn profile(session: &Session, artist_id: &str) -> Result<ArtistProfile> {
     Ok(profile_from(&metadata(session, artist_id).await?))
 }
@@ -169,8 +184,8 @@ async fn popular(session: &Session, releases: &[Album], known: &[Track]) -> Resu
     Ok(rest)
 }
 
-/// Reads album tracks in batches and ranks their metadata by Spotify's popularity score.
-async fn ranked_tracks(session: &Session, releases: &[Album]) -> Result<Vec<Track>> {
+/// Reads album tracks in batches, in release order, without ranking them.
+async fn release_tracks(session: &Session, releases: &[Album]) -> Result<Vec<Track>> {
     let mined: Vec<String> = releases
         .iter()
         .map(|album| format!("{ALBUM_PREFIX}{}", album.id))
@@ -178,11 +193,6 @@ async fn ranked_tracks(session: &Session, releases: &[Album]) -> Result<Vec<Trac
     if mined.is_empty() {
         return Ok(Vec::new());
     }
-    log::debug!(
-        "artists: ranking the tracks of {} of {} releases",
-        mined.len(),
-        releases.len()
-    );
 
     let uris = albums::track_uris(session, &mined).await?;
     if uris.is_empty() {
@@ -190,14 +200,19 @@ async fn ranked_tracks(session: &Session, releases: &[Album]) -> Result<Vec<Trac
     }
 
     let known_tracks = collection::metadata(session, &uris).await?;
-    let mut rest: Vec<Track> = uris
+    Ok(uris
         .iter()
         .filter_map(|uri| known_tracks.get(uri))
         .filter(|track| track.playable && track.id.is_some())
         .cloned()
-        .collect();
-    rest.sort_by_key(|track| std::cmp::Reverse(track.popularity));
+        .collect())
+}
 
+/// Reads album tracks in batches and ranks their metadata by Spotify's popularity score.
+async fn ranked_tracks(session: &Session, releases: &[Album]) -> Result<Vec<Track>> {
+    log::debug!("artists: ranking the tracks of {} releases", releases.len());
+    let mut rest = release_tracks(session, releases).await?;
+    rest.sort_by_key(|track| std::cmp::Reverse(track.popularity));
     Ok(rest)
 }
 

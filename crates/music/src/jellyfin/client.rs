@@ -834,13 +834,21 @@ impl MusicApi for JellyfinClient {
 
     /// One query answers every song Jellyfin credits to the artist, so the page does not read
     /// each release in turn.
-    async fn artist_all_tracks(
-        &self,
-        artist_id: &str,
-        _known: &[Track],
-        _releases: &[Album],
-    ) -> Result<Vec<Track>> {
-        self.artist_tracks(artist_id).await
+    async fn artist_all_tracks(&self, artist_id: &str, _releases: &[Album]) -> Result<Vec<Track>> {
+        let tracks = self
+            .all(
+                Query::kind("Audio")
+                    .with("ArtistIds", artist_id)
+                    .newest("ProductionYear,Album")
+                    .with(
+                        "SortBy",
+                        "ProductionYear,Album,ParentIndexNumber,IndexNumber",
+                    ),
+                |covers, item| Some(covers.track(item)),
+            )
+            .await
+            .with_context(|| format!("cannot load the songs of {artist_id}"))?;
+        Ok(crate::artist_tracklist(tracks, artist_id))
     }
 
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {

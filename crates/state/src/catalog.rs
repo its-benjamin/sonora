@@ -27,13 +27,8 @@ trait CatalogBackend: Send + Sync {
     }
 
     /// The artist's whole tracklist, loaded only once the page asks for it.
-    async fn artist_all_tracks(
-        &self,
-        _id: &str,
-        known: &[Track],
-        _releases: &[Album],
-    ) -> Result<Vec<Track>> {
-        Ok(known.to_vec())
+    async fn artist_all_tracks(&self, _id: &str, _releases: &[Album]) -> Result<Vec<Track>> {
+        Ok(Vec::new())
     }
 
     async fn artist_profile(&self, id: &str) -> Result<ArtistProfile>;
@@ -66,13 +61,8 @@ impl CatalogBackend for ApiBackend {
     async fn artist_catalogue(&self, id: &str, known: &[Track]) -> Result<ArtistCatalogue> {
         self.0.artist_catalogue(id, known).await
     }
-    async fn artist_all_tracks(
-        &self,
-        id: &str,
-        known: &[Track],
-        releases: &[Album],
-    ) -> Result<Vec<Track>> {
-        self.0.artist_all_tracks(id, known, releases).await
+    async fn artist_all_tracks(&self, id: &str, releases: &[Album]) -> Result<Vec<Track>> {
+        self.0.artist_all_tracks(id, releases).await
     }
     async fn artist_profile(&self, id: &str) -> Result<ArtistProfile> {
         self.0.artist_profile(id).await
@@ -236,20 +226,14 @@ impl CatalogSource {
     pub(crate) async fn artist_all_tracks(
         &self,
         id: &str,
-        known: &[Track],
         releases: &[Album],
     ) -> Result<Arc<Vec<Track>>> {
         if let Some(tracks) = self.artist_tracklists.peek(id) {
             return Ok(tracks);
         }
-        let known = known.to_vec();
         let releases = releases.to_vec();
         self.artist_tracklists
-            .load(
-                id,
-                self.backend
-                    .artist_all_tracks(id, known.as_slice(), releases.as_slice()),
-            )
+            .load(id, self.backend.artist_all_tracks(id, releases.as_slice()))
             .await
     }
 

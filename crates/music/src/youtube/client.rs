@@ -62,6 +62,81 @@ impl YouTubeClient {
             }
         }
     }
+
+    /// Builds the artist's tracks from the ranked songs playlist and every release. The ranked
+    /// rail is left out when the page is showing All tracks.
+    async fn tracks_of(
+        &self,
+        artist_id: &str,
+        ranked_first: bool,
+        releases: &[Album],
+    ) -> Result<Vec<Track>> {
+        let albums = async {
+            match releases.is_empty() {
+                true => self
+                    .api
+                    .discography(artist_id)
+                    .await
+                    .map(|albums| albums.into_iter().map(wire::album).collect()),
+                false => Ok(releases.to_vec()),
+            }
+        };
+        let (artist, albums) = tokio::join!(self.api.artist(artist_id), albums);
+        let mut artist = artist?;
+        let mut tracks: Vec<Track> = Vec::new();
+        if ranked_first {
+            self.hydrate_durations(&mut artist.top_tracks).await;
+            tracks.extend(
+                artist
+                    .top_tracks
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, track)| wire::track(track, index as u32)),
+            );
+        }
+        let ranked = async {
+            match artist.songs {
+                Some(songs) => self.playlist_tracks(&songs).await,
+                None => Ok(Vec::new()),
+            }
+        };
+        let mut albums = match albums {
+            Ok(albums) => albums,
+            Err(error) => {
+                log::warn!("youtube: cannot read the discography of {artist_id}: {error:#}");
+                artist
+                    .albums
+                    .into_iter()
+                    .chain(artist.singles)
+                    .map(wire::album)
+                    .collect()
+            }
+        };
+        albums.sort_by(|left, right| right.release_date.cmp(&left.release_date));
+        let releases = stream::iter(albums)
+            .map(|album| async move { (self.album_tracks(&album.id).await, album.id) })
+            .buffered(ALBUM_READS)
+            .collect::<Vec<_>>();
+        let (ranked, releases) = tokio::join!(ranked, releases);
+        match ranked {
+            Ok(ranked) => tracks.extend(ranked),
+            Err(error) => {
+                log::warn!("youtube: cannot read the songs of artist {artist_id}: {error:#}")
+            }
+        }
+        for (read, album) in releases {
+            match read {
+                Ok(songs) => tracks.extend(songs),
+                Err(error) => {
+                    log::warn!("youtube: cannot read the album {album}: {error:#}");
+                }
+            }
+        }
+        Ok(match ranked_first {
+            true => crate::artist_songs(tracks, artist_id),
+            false => crate::artist_tracklist(tracks, artist_id),
+        })
+    }
 }
 
 #[async_trait]
@@ -104,62 +179,13 @@ impl MusicApi for YouTubeClient {
     /// Starts with YouTube's ranked songs, then adds album tracks newest first.
     /// The ranked playlist is capped by YouTube, so album reads supply the remaining songs.
     async fn artist_tracks(&self, artist_id: &str) -> Result<Vec<Track>> {
-        let (artist, albums) =
-            tokio::join!(self.api.artist(artist_id), self.api.discography(artist_id));
-        let mut artist = artist?;
-        self.hydrate_durations(&mut artist.top_tracks).await;
-        let mut tracks: Vec<Track> = artist
-            .top_tracks
-            .into_iter()
-            .enumerate()
-            .map(|(index, track)| wire::track(track, index as u32))
-            .collect();
-        let ranked = async {
-            match artist.songs {
-                Some(songs) => self.playlist_tracks(&songs).await,
-                None => Ok(Vec::new()),
-            }
-        };
-        let albums = match albums {
-            Ok(albums) => albums,
-            Err(error) => {
-                log::warn!("youtube: cannot read the discography of {artist_id}: {error:#}");
-                artist.albums.into_iter().chain(artist.singles).collect()
-            }
-        };
-        let mut albums: Vec<Album> = albums.into_iter().map(wire::album).collect();
-        albums.sort_by(|left, right| right.release_date.cmp(&left.release_date));
-        let releases = stream::iter(albums)
-            .map(|album| async move { (self.album_tracks(&album.id).await, album.id) })
-            .buffered(ALBUM_READS)
-            .collect::<Vec<_>>();
-        let (ranked, releases) = tokio::join!(ranked, releases);
-        match ranked {
-            Ok(ranked) => tracks.extend(ranked),
-            Err(error) => {
-                log::warn!("youtube: cannot read the songs of artist {artist_id}: {error:#}")
-            }
-        }
-        for (read, album) in releases {
-            match read {
-                Ok(songs) => tracks.extend(songs),
-                Err(error) => {
-                    log::warn!("youtube: cannot read the album {album}: {error:#}");
-                }
-            }
-        }
-        Ok(crate::artist_songs(tracks, artist_id))
+        self.tracks_of(artist_id, true, &[]).await
     }
 
     /// The ranked songs playlist and every album, read once for the page instead of release by
-    /// release on top of that.
-    async fn artist_all_tracks(
-        &self,
-        artist_id: &str,
-        _known: &[Track],
-        _releases: &[Album],
-    ) -> Result<Vec<Track>> {
-        self.artist_tracks(artist_id).await
+    /// release on top of that, without the separate top-tracks rail.
+    async fn artist_all_tracks(&self, artist_id: &str, releases: &[Album]) -> Result<Vec<Track>> {
+        self.tracks_of(artist_id, false, releases).await
     }
 
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {

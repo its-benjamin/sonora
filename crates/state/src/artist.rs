@@ -178,11 +178,10 @@ impl ArtistDetail {
         self.all_loading = true;
         self.all_error = None;
         self.all_unavailable = false;
-        let known = artist.top_tracks.clone();
         let releases = artist.albums.clone();
         let request = self.io.spawn({
             let id = id.clone();
-            async move { catalog.artist_all_tracks(&id, &known, &releases).await }
+            async move { catalog.artist_all_tracks(&id, &releases).await }
         });
         self.all_request = Some(request.abort_handle());
         self.all_task = Some(cx.spawn(async move |this, cx| {
