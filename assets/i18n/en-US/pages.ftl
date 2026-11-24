@@ -80,6 +80,9 @@ artist-followers = { $count ->
 }
 artist-popular = Popular
 artist-popular-empty = Nothing to play from this artist yet
+artist-all-tracks = All tracks
+artist-all-tracks-error = Could not load every track: { $error }
+artist-all-tracks-unavailable = This artist's tracks are unavailable right now
 artist-favorite-songs = Your favorite songs
 artist-favorite-songs-count = { $count ->
     [one] { $count } song in your Favorites

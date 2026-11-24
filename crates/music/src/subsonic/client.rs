@@ -873,6 +873,16 @@ impl MusicApi for SubsonicClient {
         Ok(crate::artist_songs(tracks, artist_id))
     }
 
+    /// Every album's tracks in release order. The server has no whole-artist songs listing,
+    /// so the albums are the source; the Popular view keeps the ranked top songs.
+    async fn artist_all_tracks(&self, artist_id: &str, releases: &[Album]) -> Result<Vec<Track>> {
+        let releases = match releases.is_empty() {
+            true => self.artist(artist_id).await?.albums,
+            false => releases.to_vec(),
+        };
+        crate::artist_release_tracks(self, artist_id, &releases).await
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         let artist = self.artist(artist_id).await?;
         Ok(ArtistProfile {

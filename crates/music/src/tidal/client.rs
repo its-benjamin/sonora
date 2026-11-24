@@ -1184,6 +1184,12 @@ impl MusicApi for TidalClient {
         Ok(crate::artist_songs(tracks, artist_id))
     }
 
+    /// The v1 api has no whole-artist songs listing, and the v2 relationship does not carry
+    /// the album each track belongs to, so the releases supply the list in release order.
+    async fn artist_all_tracks(&self, artist_id: &str, releases: &[Album]) -> Result<Vec<Track>> {
+        crate::artist_release_tracks(self, artist_id, releases).await
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         let detail_path = format!("/artists/{}", escape::component(artist_id));
         let (detail, biography) =

@@ -24,6 +24,14 @@ pub struct ArtistDetail {
     filling: bool,
     fill: Option<Task<()>>,
     filling_request: Option<AbortHandle>,
+    all_tracks: Vec<Track>,
+    all_loading: bool,
+    all_loaded: bool,
+    all_error: Option<String>,
+    all_unavailable: bool,
+    all_wanted: bool,
+    all_task: Option<Task<()>>,
+    all_request: Option<AbortHandle>,
 }
 
 impl EventEmitter<ArtistDetailEvent> for ArtistDetail {}
@@ -69,7 +77,10 @@ impl ArtistDetail {
             Arc::make_mut(artist)
                 .top_tracks
                 .retain(|track| !track.id.as_ref().is_some_and(|id| ids.contains(id)));
-            if artist.top_tracks.len() != before {
+            let all_before = this.all_tracks.len();
+            this.all_tracks
+                .retain(|track| !track.id.as_ref().is_some_and(|id| ids.contains(id)));
+            if artist.top_tracks.len() != before || this.all_tracks.len() != all_before {
                 cx.notify();
             }
         })
@@ -88,6 +99,14 @@ impl ArtistDetail {
             filling: false,
             fill: None,
             filling_request: None,
+            all_tracks: Vec::new(),
+            all_loading: false,
+            all_loaded: false,
+            all_error: None,
+            all_unavailable: false,
+            all_wanted: false,
+            all_task: None,
+            all_request: None,
         }
     }
 
@@ -104,6 +123,90 @@ impl ArtistDetail {
             .as_ref()
             .map(|artist| artist.top_tracks.as_slice())
             .unwrap_or_default()
+    }
+
+    /// The artist's whole tracklist, empty until the page asks for it. Unlike `tracks`, it is
+    /// not the provider's popular selection: it is every track under the artist's releases.
+    pub fn all_tracks(&self) -> &[Track] {
+        &self.all_tracks
+    }
+
+    pub fn is_loading_all(&self) -> bool {
+        self.all_loading || self.all_wanted
+    }
+
+    pub fn all_error(&self) -> Option<&str> {
+        self.all_error.as_deref()
+    }
+
+    pub fn all_unavailable(&self) -> bool {
+        self.all_unavailable
+    }
+
+    /// Loads the artist's whole tracklist once, when the All tracks tab is first opened. It
+    /// waits for the discography the page fills in behind the overview, then reads the releases
+    /// through the catalog, which caches the answer with the rest of the artist's detail.
+    pub fn load_all(&mut self, cx: &mut Context<Self>) {
+        if self.all_loaded || self.all_loading {
+            return;
+        }
+        self.all_error = None;
+        self.all_unavailable = false;
+        self.all_wanted = true;
+        self.fetch_all(cx);
+    }
+
+    /// Starts the whole-tracklist read once the release list is ready.
+    fn fetch_all(&mut self, cx: &mut Context<Self>) {
+        if !self.all_wanted || self.all_loading || self.all_loaded || self.filling {
+            return;
+        }
+        let Some(id) = self.id.clone() else {
+            return;
+        };
+        let Some(artist) = self.artist.clone() else {
+            return;
+        };
+        let Some(catalog) = self.session.read(cx).catalog(&id) else {
+            self.all_wanted = false;
+            self.all_unavailable = true;
+            cx.notify();
+            return;
+        };
+
+        self.all_wanted = false;
+        self.all_loading = true;
+        self.all_error = None;
+        self.all_unavailable = false;
+        let releases = artist.albums.clone();
+        let request = self.io.spawn({
+            let id = id.clone();
+            async move { catalog.artist_all_tracks(&id, &releases).await }
+        });
+        self.all_request = Some(request.abort_handle());
+        self.all_task = Some(cx.spawn(async move |this, cx| {
+            let loaded = join(request).await;
+
+            this.update(cx, |this, cx| {
+                if this.id.as_deref() != Some(id.as_str()) {
+                    return;
+                }
+
+                this.all_loading = false;
+                this.all_request = None;
+                this.all_task = None;
+                match crate::settled(loaded, cx) {
+                    Ok(tracks) => {
+                        this.all_tracks = tracks.as_ref().clone();
+                        this.all_loaded = true;
+                    }
+                    Err(reason) => this.all_error = Some(reason),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
     }
 
     pub fn albums(&self) -> &[Album] {
@@ -242,6 +345,7 @@ impl ArtistDetail {
         };
         if let Some(catalogue) = catalog.peek_artist_catalogue(id) {
             self.absorb(&catalogue);
+            self.fetch_all(cx);
             return;
         }
 
@@ -267,6 +371,7 @@ impl ArtistDetail {
                     Ok(catalogue) => this.absorb(&catalogue),
                     Err(error) => log::warn!("artist: cannot fill the page: {error:#}"),
                 }
+                this.fetch_all(cx);
                 cx.notify();
             })
             .ok();
@@ -297,9 +402,14 @@ impl ArtistDetail {
     fn clear(&mut self) {
         self.task = None;
         self.fill = None;
-        for request in [self.request.take(), self.filling_request.take()]
-            .into_iter()
-            .flatten()
+        self.all_task = None;
+        for request in [
+            self.request.take(),
+            self.filling_request.take(),
+            self.all_request.take(),
+        ]
+        .into_iter()
+        .flatten()
         {
             request.abort();
         }
@@ -309,5 +419,11 @@ impl ArtistDetail {
         self.loading = false;
         self.filling = false;
         self.error = None;
+        self.all_tracks.clear();
+        self.all_loading = false;
+        self.all_loaded = false;
+        self.all_error = None;
+        self.all_unavailable = false;
+        self.all_wanted = false;
     }
 }

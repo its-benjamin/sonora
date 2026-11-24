@@ -40,7 +40,6 @@ use crate::shared::trouble;
 const SECTION: &str = "artist";
 const RELEASE_ROWS: usize = 2;
 const LISTED: usize = 5;
-const LISTED_MAX: usize = 10;
 /// The outline of a release filter chip, above and below its label.
 const CHIP_OUTLINE: Pixels = px(1.);
 /// The favorites dialog gives two song columns enough room for titles and controls.
@@ -96,20 +95,43 @@ const BANNER_SHADE: f32 = 0.85;
 /// The blur over a portrait standing in for a missing banner, enough to leave only its colours.
 const BANNER_WASH: Pixels = px(48.);
 
-/// The popular tracks the list can expand to. The table caps how many show, after sorting, so
-/// the collapsed list is the head of the expanded one.
+/// Which list the artist page is showing: the provider's popular selection, or every track the
+/// artist's releases hold.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArtistTab {
+    Popular,
+    All,
+}
+
+impl ArtistTab {
+    fn label(self) -> SharedString {
+        match self {
+            Self::Popular => t!("artist-popular"),
+            Self::All => t!("artist-all-tracks"),
+        }
+    }
+}
+
+/// The tracks the artist list shows: the provider's popular selection or every track under the
+/// artist's releases.
 struct ArtistTracks {
     detail: Entity<ArtistDetail>,
+    show_all: Rc<Cell<bool>>,
 }
 
 impl Tracks for ArtistTracks {
     fn tracks<'a>(&self, cx: &'a App) -> Joined<'a, Track> {
-        let tracks = self.detail.read(cx).tracks();
-        tracks[..LISTED_MAX.min(tracks.len())].into()
+        let detail = self.detail.read(cx);
+        match self.show_all.get() {
+            true => detail.all_tracks().into(),
+            false => detail.tracks().into(),
+        }
     }
 
     fn is_loading(&self, cx: &App) -> bool {
-        self.detail.read(cx).is_loading()
+        let detail = self.detail.read(cx);
+        detail.is_loading()
+            || (self.show_all.get() && (detail.is_filling() || detail.is_loading_all()))
     }
 
     /// As many rows as the list shows before it is expanded.
@@ -133,10 +155,11 @@ pub(crate) struct ArtistView {
     about_open: bool,
     favorites_open: bool,
     table: Entity<TableState<TrackSource>>,
-    /// How many popular tracks the list shows, `LISTED` or `LISTED_MAX`.
-    shown: usize,
     mode: Mode,
+    tab: ArtistTab,
+    show_all: Rc<Cell<bool>>,
     popular: Rc<Vec<Track>>,
+    all: Rc<Vec<Track>>,
     popular_page: usize,
     popular_columns: usize,
     track_menu: ItemMenu,
@@ -180,6 +203,7 @@ impl ArtistView {
                 .playcounts,
         );
         let scroll = scrollbar.read(cx).scroll().clone();
+        let show_all = Rc::new(Cell::new(false));
         let table = cx.new(|cx| {
             let menu_scrollbar = cx.new(|_| Scrollbar::inset().watching(id));
             crate::shared::tracks::follow_downloads(cx);
@@ -187,6 +211,7 @@ impl ArtistView {
                 columns,
                 ArtistTracks {
                     detail: detail.clone(),
+                    show_all: show_all.clone(),
                 },
                 playback.clone(),
                 menu_scrollbar,
@@ -233,13 +258,28 @@ impl ArtistView {
                 this.about_open = false;
                 this.favorites_open = false;
                 this.rails.clear();
-                this.show(LISTED, cx);
+                let all = this.tab == ArtistTab::All;
+                this.show_all.set(all);
+                let limit = (!all).then_some(LISTED);
+                this.table.update(cx, |table, cx| {
+                    table.delegate_mut().set_limit(limit, cx);
+                });
+                if all && this.artist_id.is_some() {
+                    let view = cx.entity().downgrade();
+                    cx.defer(move |cx| {
+                        view.update(cx, |this, cx| {
+                            this.detail.update(cx, |detail, cx| detail.load_all(cx));
+                        })
+                        .ok();
+                    });
+                }
                 this.scrollbar.update(cx, |bar, cx| {
                     bar.set_max_offset(None, cx);
                     bar.scroll().set_offset(gpui::Point::default());
                 });
             }
             this.popular = Rc::new(detail.read(cx).tracks().to_vec());
+            this.all = Rc::new(detail.read(cx).all_tracks().to_vec());
             this.popular_page = 0;
             this.track_menu.reset(cx);
             this.track_context = None;
@@ -285,6 +325,7 @@ impl ArtistView {
         let cover_viewer = cx.new(CoverViewer::new);
         // The hero portrait hides while the viewer shows it, until it lands back on it.
         cx.observe(&cover_viewer, |_, _, cx| cx.notify()).detach();
+        let all = Rc::new(detail.read(cx).all_tracks().to_vec());
 
         Self {
             popular: Rc::new(detail.read(cx).tracks().to_vec()),
@@ -302,8 +343,10 @@ impl ArtistView {
             about_open: false,
             favorites_open: false,
             table,
-            shown: LISTED,
             mode,
+            tab: ArtistTab::Popular,
+            show_all,
+            all,
             popular_page: 0,
             popular_columns: 0,
             track_menu: ItemMenu::new(playlist_scrollbar, cx),
@@ -336,12 +379,23 @@ impl ArtistView {
         });
     }
 
-    fn show(&mut self, count: usize, cx: &mut Context<Self>) {
-        self.shown = count;
+    fn set_tab(&mut self, tab: ArtistTab, cx: &mut Context<Self>) {
+        if self.tab == tab {
+            return;
+        }
+        self.tab = tab;
+        self.show_all.set(tab == ArtistTab::All);
+        if tab == ArtistTab::All {
+            self.detail.update(cx, |detail, cx| detail.load_all(cx));
+        }
+        let limit = (tab == ArtistTab::Popular).then_some(LISTED);
         self.table.update(cx, |table, cx| {
-            table.delegate_mut().set_limit(Some(count), cx);
-            cx.notify();
+            table.delegate_mut().set_limit(limit, cx);
+            table.rebuild(cx);
         });
+        self.popular_page = 0;
+        self.track_context = None;
+        cx.notify();
     }
 
     fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
@@ -982,42 +1036,57 @@ impl ArtistView {
         .collect()
     }
 
+    /// The All tracks read's failure, with a retry, for whichever list is drawn.
+    fn track_error(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.tab == ArtistTab::Popular {
+            return None;
+        }
+        let detail = self.detail.read(cx);
+        let error = match detail.all_unavailable() {
+            true => t!("artist-all-tracks-unavailable"),
+            false => detail
+                .all_error()
+                .map(|error| t!("artist-all-tracks-error", error = error))?,
+        };
+        let theme = *cx.theme();
+
+        Some(
+            div()
+                .id("artist-all-tracks-error")
+                .role(Role::Alert)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(div().text_color(theme.danger).child(error))
+                .child(
+                    Button::new("artist-all-tracks-retry")
+                        .label(t!("trouble-retry"))
+                        .small()
+                        .outline()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.detail.update(cx, |detail, cx| detail.load_all(cx));
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn listed(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
-        let expanded = self.shown > LISTED;
-        let more = (self.popular.len() > LISTED).then(|| {
-            Button::new("artist-popular-more")
-                .label(match expanded {
-                    true => t!("common-show-less"),
-                    false => t!("common-show-all"),
-                })
-                .trailing(chevron(expanded))
-                .small()
-                .ghost()
-                .aria_expanded(expanded)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.show(
-                        match expanded {
-                            true => LISTED,
-                            false => LISTED_MAX,
-                        },
-                        cx,
-                    );
-                    cx.notify();
-                }))
-        });
+        let error = self.track_error(cx);
 
         div()
             .flex()
             .flex_col()
             .gap_2()
+            .children(error)
             .child(
                 table(&self.table)
                     .rounded(theme.radius)
                     .border_1()
                     .border_color(theme.border),
             )
-            .children(more)
             .into_any_element()
     }
 
@@ -1029,24 +1098,43 @@ impl ArtistView {
     }
 
     fn popular(&self, cx: &mut Context<Self>) -> AnyElement {
-        let tracks = self.popular.clone();
+        let loading = {
+            let detail = self.detail.read(cx);
+            detail.is_loading()
+                || (self.tab == ArtistTab::All && (detail.is_filling() || detail.is_loading_all()))
+        };
+        let (tracks, tag, title, vacancy) = match self.tab {
+            ArtistTab::Popular => (
+                self.popular.clone(),
+                "artist-popular",
+                "artist-popular",
+                "artist-popular-empty",
+            ),
+            ArtistTab::All => (
+                self.all.clone(),
+                "artist-all",
+                "artist-all-tracks",
+                "artist-popular-empty",
+            ),
+        };
         let from = self.playing_from(cx);
         let pages = Shape::new(self.width, tracks.len()).pages;
         let queued = tracks.clone();
         let playback = self.playback.clone();
         let opened = cx.entity().downgrade();
 
-        Picks::new(
-            "artist-popular",
+        let error = self.track_error(cx);
+        let picks = Picks::new(
+            tag,
             tracks,
             self.playback.clone(),
             self.width,
             self.popular_page,
         )
-        .title("artist-popular")
-        .vacancy("artist-popular-empty")
+        .title(title)
+        .vacancy(vacancy)
         .detailed()
-        .loading(self.detail.read(cx).is_loading())
+        .loading(loading)
         .on_previous(cx.listener(|this, _, _, cx| {
             this.popular_page = this.popular_page.saturating_sub(1);
             this.track_context = None;
@@ -1071,8 +1159,15 @@ impl ArtistView {
             playback.update(cx, |playback, cx| {
                 playback.start(queued.as_ref().clone(), place, from.clone(), cx)
             });
-        })
-        .into_any_element()
+        });
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .children(error)
+            .child(picks)
+            .into_any_element()
     }
 
     /// Opens the listener's favorites for this artist without adding songs to the page.
@@ -1279,10 +1374,30 @@ impl Tooled for ArtistView {
 
     fn tools(&self, _cx: &App) -> Vec<AnyElement> {
         let viewed = self.me.clone();
+        let tabs = [ArtistTab::Popular, ArtistTab::All]
+            .map(|tab| {
+                let viewed = viewed.clone();
+                Button::new(match tab {
+                    ArtistTab::Popular => "artist-tab-popular",
+                    ArtistTab::All => "artist-tab-all",
+                })
+                .label(tab.label())
+                .small()
+                .outline()
+                .selected(self.tab == tab)
+                .aria_toggled(Toggled::from(self.tab == tab))
+                .on_click(move |_, _, cx| {
+                    viewed.update(cx, |view, cx| view.set_tab(tab, cx)).ok();
+                })
+            })
+            .into_iter();
 
-        vec![tools::views(&self.popovers, self.mode, move |mode, cx| {
-            viewed.update(cx, |view, cx| view.set_mode(mode, cx)).ok();
-        })]
+        vec![
+            div().flex().gap_1().children(tabs).into_any_element(),
+            tools::views(&self.popovers, self.mode, move |mode, cx| {
+                viewed.update(cx, |view, cx| view.set_mode(mode, cx)).ok();
+            }),
+        ]
     }
 }
 
@@ -1346,6 +1461,19 @@ impl Render for ArtistView {
         });
 
         let listed = self.mode == Mode::List;
+        let tab = self.tab;
+        let show_all = (tab == ArtistTab::Popular && self.popular.len() > LISTED).then(|| {
+            let me = self.me.clone();
+            Button::new("artist-popular-more")
+                .label(t!("common-show-all"))
+                .trailing(chevron(false))
+                .small()
+                .ghost()
+                .on_click(move |_, _, cx| {
+                    me.update(cx, |view, cx| view.set_tab(ArtistTab::All, cx))
+                        .ok();
+                })
+        });
         let release_padding = self.release_padding;
         let head = self.header(cx);
         let cover = theme.metrics.cover;
@@ -1397,17 +1525,24 @@ impl Render for ArtistView {
                     .child(head)
                     .children(favorites)
                     .when(listed, |this| {
-                        let label = t!("artist-popular");
+                        let label = tab.label();
                         this.child(
                             div()
-                                .id("artist-popular-heading")
-                                .role(Role::Heading)
-                                .aria_level(2)
-                                .aria_label(label.clone())
+                                .flex()
+                                .items_center()
+                                .justify_between()
                                 .pb_3()
-                                .text_size(theme.text(Text::Title))
-                                .font_weight(FontWeight::BOLD)
-                                .child(label),
+                                .child(
+                                    div()
+                                        .id("artist-tracks-heading")
+                                        .role(Role::Heading)
+                                        .aria_level(2)
+                                        .aria_label(label.clone())
+                                        .text_size(theme.text(Text::Title))
+                                        .font_weight(FontWeight::BOLD)
+                                        .child(label),
+                                )
+                                .children(show_all),
                         )
                     }),
             )

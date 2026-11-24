@@ -83,6 +83,12 @@ impl MusicApi for LibrespotClient {
         artists::tracks(&self.session, artist_id).await
     }
 
+    /// Every release's tracks in one batched metadata read, so the page does not open each
+    /// release by itself. The ranked overview rail stays in Popular.
+    async fn artist_all_tracks(&self, artist_id: &str, releases: &[Album]) -> Result<Vec<Track>> {
+        artists::discography_tracks(&self.session, artist_id, releases).await
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         artists::profile(&self.session, artist_id).await
     }

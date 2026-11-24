@@ -1219,6 +1219,16 @@ impl MusicApi for DeezerClient {
         Ok(crate::artist_songs(tracks, artist_id))
     }
 
+    /// Every release in turn, in release order. Deezer has no unranked whole-artist songs
+    /// listing, so the ranked top tracks stay in Popular.
+    async fn artist_all_tracks(&self, artist_id: &str, releases: &[Album]) -> Result<Vec<Track>> {
+        let releases = match releases.is_empty() {
+            true => self.artist(artist_id).await?.albums,
+            false => releases.to_vec(),
+        };
+        crate::artist_release_tracks(self, artist_id, &releases).await
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         let detail = self
             .public(&format!("/artist/{}", escape::component(artist_id)))

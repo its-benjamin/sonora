@@ -1819,6 +1819,12 @@ impl MusicApi for AppleClient {
         recommend::artist_tracks(self, artist_id).await
     }
 
+    /// Apple has no whole-artist songs listing, so every release supplies its tracks in
+    /// release order. The ranked top-songs list stays in the Popular view.
+    async fn artist_all_tracks(&self, artist_id: &str, releases: &[Album]) -> Result<Vec<Track>> {
+        crate::artist_release_tracks(self, artist_id, releases).await
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         let id = self.catalog_artist(artist_id).await?;
         let body = self

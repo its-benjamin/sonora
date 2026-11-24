@@ -282,6 +282,13 @@ impl MusicApi for LocalClient {
         })
     }
 
+    /// Every scanned track credited to the artist is already in `artist`, so the page does not
+    /// read each album again.
+    async fn artist_all_tracks(&self, artist_id: &str, _releases: &[Album]) -> Result<Vec<Track>> {
+        let tracks = self.artist_tracks(artist_id).await?;
+        Ok(crate::artist_tracklist(tracks, artist_id))
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         let scanned = self.scanned.read().unwrap();
         let artist = scanned

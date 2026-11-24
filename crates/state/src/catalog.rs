@@ -5,11 +5,12 @@ use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use moka::{future::Cache, sync::Cache as SyncCache};
 use music::{
-    AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, GenreDetail, MusicApi,
-    PlaylistDetail, Track,
+    Album, AlbumCatalogue, AlbumDetail, Artist, ArtistCatalogue, ArtistProfile, GenreDetail,
+    MusicApi, PlaylistDetail, Track,
 };
 
 const ARTISTS: usize = 32;
+const ARTIST_TRACKLISTS: usize = 16;
 const ARTIST_PROFILES: usize = 64;
 const ALBUMS: usize = 48;
 const ALBUM_CATALOGUES: usize = 48;
@@ -23,6 +24,11 @@ trait CatalogBackend: Send + Sync {
 
     async fn artist_catalogue(&self, _id: &str, _known: &[Track]) -> Result<ArtistCatalogue> {
         Ok(ArtistCatalogue::default())
+    }
+
+    /// The artist's whole tracklist, loaded only once the page asks for it.
+    async fn artist_all_tracks(&self, _id: &str, _releases: &[Album]) -> Result<Vec<Track>> {
+        Ok(Vec::new())
     }
 
     async fn artist_profile(&self, id: &str) -> Result<ArtistProfile>;
@@ -54,6 +60,9 @@ impl CatalogBackend for ApiBackend {
     }
     async fn artist_catalogue(&self, id: &str, known: &[Track]) -> Result<ArtistCatalogue> {
         self.0.artist_catalogue(id, known).await
+    }
+    async fn artist_all_tracks(&self, id: &str, releases: &[Album]) -> Result<Vec<Track>> {
+        self.0.artist_all_tracks(id, releases).await
     }
     async fn artist_profile(&self, id: &str) -> Result<ArtistProfile> {
         self.0.artist_profile(id).await
@@ -145,6 +154,7 @@ pub(crate) struct CatalogSource {
     backend: Arc<dyn CatalogBackend>,
     artists: CatalogCache<Artist>,
     catalogues: CatalogCache<ArtistCatalogue>,
+    artist_tracklists: CatalogCache<Vec<Track>>,
     artist_profiles: CatalogCache<ArtistProfile>,
     albums: CatalogCache<AlbumDetail>,
     album_catalogues: CatalogCache<AlbumCatalogue>,
@@ -163,6 +173,7 @@ impl CatalogSource {
             backend,
             artists: CatalogCache::new(ARTISTS),
             catalogues: CatalogCache::new(ARTISTS),
+            artist_tracklists: CatalogCache::new(ARTIST_TRACKLISTS),
             artist_profiles: CatalogCache::new(ARTIST_PROFILES),
             albums: CatalogCache::new(ALBUMS),
             album_catalogues: CatalogCache::new(ALBUM_CATALOGUES),
@@ -189,6 +200,7 @@ impl CatalogSource {
     pub(crate) async fn invalidate_artist(&self, id: &str) {
         self.artists.invalidate(id).await;
         self.catalogues.invalidate(id).await;
+        self.artist_tracklists.invalidate(id).await;
     }
 
     pub(crate) fn peek_artist_catalogue(&self, id: &str) -> Option<Arc<ArtistCatalogue>> {
@@ -205,6 +217,23 @@ impl CatalogSource {
     ) -> Result<Arc<ArtistCatalogue>> {
         self.catalogues
             .load(id, self.backend.artist_catalogue(id, known))
+            .await
+    }
+
+    /// The artist's whole tracklist, which the page asks for only when its All tracks tab is
+    /// opened. It is cached with the artist's other detail, so going back to the page does not
+    /// read every release again.
+    pub(crate) async fn artist_all_tracks(
+        &self,
+        id: &str,
+        releases: &[Album],
+    ) -> Result<Arc<Vec<Track>>> {
+        if let Some(tracks) = self.artist_tracklists.peek(id) {
+            return Ok(tracks);
+        }
+        let releases = releases.to_vec();
+        self.artist_tracklists
+            .load(id, self.backend.artist_all_tracks(id, releases.as_slice()))
             .await
     }
 
