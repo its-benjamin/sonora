@@ -1819,6 +1819,22 @@ impl MusicApi for AppleClient {
         recommend::artist_tracks(self, artist_id).await
     }
 
+    /// Apple ranks a wider top-songs list than the overview carries, so that joins the release
+    /// tracks. Apple has no whole-artist songs listing; the releases supply the rest.
+    async fn artist_all_tracks(
+        &self,
+        artist_id: &str,
+        known: &[Track],
+        releases: &[Album],
+    ) -> Result<Vec<Track>> {
+        let mut known = known.to_vec();
+        match self.artist_tracks(artist_id).await {
+            Ok(top) => known.extend(top),
+            Err(error) => log::warn!("apple: cannot read the artist's top songs: {error:#}"),
+        }
+        crate::artist_release_tracks(self, artist_id, &known, releases).await
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         let id = self.catalog_artist(artist_id).await?;
         let body = self

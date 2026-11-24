@@ -1184,6 +1184,23 @@ impl MusicApi for TidalClient {
         Ok(crate::artist_songs(tracks, artist_id))
     }
 
+    /// Tidal's top tracks reach further than the overview, so they join the release tracks.
+    /// The v1 api has no whole-artist songs listing, and the v2 relationship does not carry
+    /// the album each track belongs to.
+    async fn artist_all_tracks(
+        &self,
+        artist_id: &str,
+        known: &[Track],
+        releases: &[Album],
+    ) -> Result<Vec<Track>> {
+        let mut known = known.to_vec();
+        match self.artist_tracks(artist_id).await {
+            Ok(top) => known.extend(top),
+            Err(error) => log::warn!("tidal: cannot read the artist's top tracks: {error:#}"),
+        }
+        crate::artist_release_tracks(self, artist_id, &known, releases).await
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         let detail_path = format!("/artists/{}", escape::component(artist_id));
         let (detail, biography) =

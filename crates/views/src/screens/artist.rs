@@ -1066,7 +1066,15 @@ impl ArtistView {
                 }))
         });
         let error = match self.tab {
-            ArtistTab::All => self.detail.read(cx).all_error().map(str::to_owned),
+            ArtistTab::All => {
+                let detail = self.detail.read(cx);
+                match detail.all_unavailable() {
+                    true => Some(t!("artist-all-tracks-unavailable")),
+                    false => detail
+                        .all_error()
+                        .map(|error| t!("artist-all-tracks-error", error = error)),
+                }
+            }
             ArtistTab::Popular => None,
         };
 

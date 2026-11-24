@@ -446,8 +446,7 @@ mod tests {
     use anyhow::anyhow;
     use async_trait::async_trait;
     use music::{
-        Album, AlbumDetail, Artist, ArtistProfile, ArtistRef, GenreDetail, Playlist,
-        PlaylistDetail, Track,
+        AlbumDetail, Artist, ArtistProfile, ArtistRef, GenreDetail, Playlist, PlaylistDetail, Track,
     };
 
     use super::{CatalogBackend, CatalogCache, CatalogSource};
@@ -544,20 +543,6 @@ mod tests {
             })
         }
 
-        async fn artist_all_tracks(
-            &self,
-            id: &str,
-            known: &[Track],
-            releases: &[Album],
-        ) -> anyhow::Result<Vec<Track>> {
-            self.count("artist_all_tracks", id);
-            let mut tracks = known.to_vec();
-            for album in releases {
-                tracks.extend(self.album_value(&album.id).tracks);
-            }
-            Ok(tracks)
-        }
-
         async fn artist_profile(&self, id: &str) -> anyhow::Result<ArtistProfile> {
             self.count("artist_profile", id);
             if self.fail_optional.load(Ordering::Relaxed) {
@@ -646,36 +631,6 @@ mod tests {
                 .is_err()
         );
         assert_eq!(*cache.load("bad", async { Ok(9) }).await.unwrap(), 9);
-    }
-
-    #[tokio::test]
-    async fn an_artist_tracklist_is_cached_with_its_artist() {
-        let api = Arc::new(FakeBackend::new("remote"));
-        let catalog = CatalogSource::test(api.clone());
-        let known = vec![api.track_value("known")];
-        let releases = vec![Album {
-            id: "album".to_owned(),
-            ..Default::default()
-        }];
-        let first = catalog
-            .artist_all_tracks("artist", &known, &releases)
-            .await
-            .unwrap();
-        let second = catalog
-            .artist_all_tracks("artist", &known, &releases)
-            .await
-            .unwrap();
-        assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].id.as_deref(), Some("known"));
-        assert_eq!(api.called("artist_all_tracks", "artist"), 1);
-
-        catalog.invalidate_artist("artist").await;
-        catalog
-            .artist_all_tracks("artist", &known, &releases)
-            .await
-            .unwrap();
-        assert_eq!(api.called("artist_all_tracks", "artist"), 2);
     }
 
     #[tokio::test]

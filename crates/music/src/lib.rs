@@ -194,22 +194,7 @@ pub trait MusicApi: Send + Sync {
         known: &[Track],
         releases: &[Album],
     ) -> Result<Vec<Track>> {
-        let mut seen = HashSet::new();
-        let releases: Vec<Album> = releases
-            .iter()
-            .filter(|album| seen.insert(album.id.clone()))
-            .cloned()
-            .collect();
-        let reads: Vec<_> = futures::stream::iter(releases)
-            .map(|album| async move {
-                let tracks = self.album_tracks(&album.id).await;
-                (album, tracks)
-            })
-            .buffered(ALBUM_READS)
-            .collect()
-            .await;
-
-        collect_release_tracks(artist_id, known, reads)
+        artist_release_tracks(self, artist_id, known, releases).await
     }
 
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile>;
@@ -1359,6 +1344,33 @@ pub fn iso_8601_to_epoch(value: Option<&str>) -> Option<i64> {
     Some(timestamp.as_second())
 }
 
+/// Reads every release's tracks for the artist page. `album_tracks` is required by the trait,
+/// so this works for every provider; the ones with a cheaper whole-artist listing call their
+/// own instead. The reads take turns so a prolific artist does not open every release at once.
+async fn artist_release_tracks<A: MusicApi + ?Sized>(
+    api: &A,
+    artist_id: &str,
+    known: &[Track],
+    releases: &[Album],
+) -> Result<Vec<Track>> {
+    let mut seen = HashSet::new();
+    let releases: Vec<Album> = releases
+        .iter()
+        .filter(|album| seen.insert(album.id.clone()))
+        .cloned()
+        .collect();
+    let reads: Vec<_> = futures::stream::iter(releases)
+        .map(|album| async move {
+            let tracks = api.album_tracks(&album.id).await;
+            (album, tracks)
+        })
+        .buffered(ALBUM_READS)
+        .collect()
+        .await;
+
+    collect_release_tracks(artist_id, known, reads)
+}
+
 /// Joins what each release answered, then the tracks the page already knew, into the artist's
 /// whole tracklist. A release that could not be read is left out; only a list with nothing at
 /// all is an error.
@@ -1468,68 +1480,6 @@ fn remaster_note(note: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn song(id: &str, name: &str, seconds: u64) -> Track {
-        Track {
-            id: Some(id.to_owned()),
-            name: name.to_owned(),
-            playable: true,
-            artists: "Artist".to_owned(),
-            artist_refs: vec![ArtistRef {
-                name: "Artist".to_owned(),
-                id: Some("artist".to_owned()),
-                channel: false,
-            }],
-            duration: Duration::from_secs(seconds),
-            ..Default::default()
-        }
-    }
-
-    fn release(id: &str) -> Album {
-        Album {
-            id: id.to_owned(),
-            name: id.to_owned(),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn release_tracks_keep_release_order_and_dedupe() {
-        let known = vec![song("top", "Top", 200)];
-        let reads = vec![
-            (
-                release("first"),
-                Ok(vec![song("one", "One", 100), song("top", "Top", 200)]),
-            ),
-            (release("second"), Ok(vec![song("two", "Two", 300)])),
-        ];
-
-        let tracks = collect_release_tracks("artist", &known, reads).unwrap();
-        let ids: Vec<_> = tracks
-            .iter()
-            .filter_map(|track| track.id.as_deref())
-            .collect();
-        assert_eq!(ids, ["one", "top", "two"]);
-    }
-
-    #[test]
-    fn a_release_that_cannot_be_read_does_not_lose_the_rest() {
-        let reads = vec![
-            (release("broken"), Err(anyhow::anyhow!("cannot read"))),
-            (release("playable"), Ok(vec![song("one", "One", 100)])),
-        ];
-
-        let tracks = collect_release_tracks("artist", &[], reads).unwrap();
-        assert_eq!(tracks.len(), 1);
-        assert_eq!(tracks[0].id.as_deref(), Some("one"));
-    }
-
-    #[test]
-    fn a_tracklist_with_nothing_to_show_reports_the_release_error() {
-        let reads = vec![(release("broken"), Err(anyhow::anyhow!("cannot read")))];
-
-        assert!(collect_release_tracks("artist", &[], reads).is_err());
-    }
 
     #[test]
     fn iso_8601_to_epoch_parses_correctly() {

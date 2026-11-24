@@ -28,6 +28,7 @@ pub struct ArtistDetail {
     all_loading: bool,
     all_loaded: bool,
     all_error: Option<String>,
+    all_unavailable: bool,
     all_wanted: bool,
     all_task: Option<Task<()>>,
     all_request: Option<AbortHandle>,
@@ -102,6 +103,7 @@ impl ArtistDetail {
             all_loading: false,
             all_loaded: false,
             all_error: None,
+            all_unavailable: false,
             all_wanted: false,
             all_task: None,
             all_request: None,
@@ -133,12 +135,12 @@ impl ArtistDetail {
         self.all_loading || self.all_wanted
     }
 
-    pub fn all_loaded(&self) -> bool {
-        self.all_loaded
-    }
-
     pub fn all_error(&self) -> Option<&str> {
         self.all_error.as_deref()
+    }
+
+    pub fn all_unavailable(&self) -> bool {
+        self.all_unavailable
     }
 
     /// Loads the artist's whole tracklist once, when the All tracks tab is first opened. It
@@ -149,6 +151,7 @@ impl ArtistDetail {
             return;
         }
         self.all_error = None;
+        self.all_unavailable = false;
         self.all_wanted = true;
         self.fetch_all(cx);
     }
@@ -166,7 +169,7 @@ impl ArtistDetail {
         };
         let Some(catalog) = self.session.read(cx).catalog(&id) else {
             self.all_wanted = false;
-            self.all_error = Some("the artist is not available".to_owned());
+            self.all_unavailable = true;
             cx.notify();
             return;
         };
@@ -174,6 +177,7 @@ impl ArtistDetail {
         self.all_wanted = false;
         self.all_loading = true;
         self.all_error = None;
+        self.all_unavailable = false;
         let known = artist.top_tracks.clone();
         let releases = artist.albums.clone();
         let request = self.io.spawn({
@@ -420,6 +424,7 @@ impl ArtistDetail {
         self.all_loading = false;
         self.all_loaded = false;
         self.all_error = None;
+        self.all_unavailable = false;
         self.all_wanted = false;
     }
 }

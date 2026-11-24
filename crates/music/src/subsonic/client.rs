@@ -873,6 +873,17 @@ impl MusicApi for SubsonicClient {
         Ok(crate::artist_songs(tracks, artist_id))
     }
 
+    /// The top songs and every album's tracks are the whole server-side set for the artist,
+    /// with no further listing to ask for.
+    async fn artist_all_tracks(
+        &self,
+        artist_id: &str,
+        _known: &[Track],
+        _releases: &[Album],
+    ) -> Result<Vec<Track>> {
+        self.artist_tracks(artist_id).await
+    }
+
     async fn artist_profile(&self, artist_id: &str) -> Result<ArtistProfile> {
         let artist = self.artist(artist_id).await?;
         Ok(ArtistProfile {
