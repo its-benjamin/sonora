@@ -446,7 +446,8 @@ mod tests {
     use anyhow::anyhow;
     use async_trait::async_trait;
     use music::{
-        AlbumDetail, Artist, ArtistProfile, ArtistRef, GenreDetail, Playlist, PlaylistDetail, Track,
+        Album, AlbumDetail, Artist, ArtistProfile, ArtistRef, GenreDetail, Playlist,
+        PlaylistDetail, Track,
     };
 
     use super::{CatalogBackend, CatalogCache, CatalogSource};

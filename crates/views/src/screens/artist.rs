@@ -1041,6 +1041,42 @@ impl ArtistView {
         .collect()
     }
 
+    /// The All tracks read's failure, with a retry, for whichever list is drawn.
+    fn track_error(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.tab == ArtistTab::Popular {
+            return None;
+        }
+        let detail = self.detail.read(cx);
+        let error = match detail.all_unavailable() {
+            true => t!("artist-all-tracks-unavailable"),
+            false => detail
+                .all_error()
+                .map(|error| t!("artist-all-tracks-error", error = error))?,
+        };
+        let theme = *cx.theme();
+
+        Some(
+            div()
+                .id("artist-all-tracks-error")
+                .role(Role::Alert)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(div().text_color(theme.danger).child(error))
+                .child(
+                    Button::new("artist-all-tracks-retry")
+                        .label(t!("trouble-retry"))
+                        .small()
+                        .outline()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.detail.update(cx, |detail, cx| detail.load_all(cx));
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn listed(&self, cx: &mut Context<Self>) -> AnyElement {
         let theme = *cx.theme();
         let expanded = self.shown > LISTED;
@@ -1065,42 +1101,13 @@ impl ArtistView {
                     cx.notify();
                 }))
         });
-        let error = match self.tab {
-            ArtistTab::All => {
-                let detail = self.detail.read(cx);
-                match detail.all_unavailable() {
-                    true => Some(t!("artist-all-tracks-unavailable")),
-                    false => detail
-                        .all_error()
-                        .map(|error| t!("artist-all-tracks-error", error = error)),
-                }
-            }
-            ArtistTab::Popular => None,
-        };
+        let error = self.track_error(cx);
 
         div()
             .flex()
             .flex_col()
             .gap_2()
-            .when_some(error, |this, error| {
-                this.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_3()
-                        .child(div().text_color(theme.danger).child(error))
-                        .child(
-                            Button::new("artist-all-tracks-retry")
-                                .label(t!("trouble-retry"))
-                                .small()
-                                .outline()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.detail.update(cx, |detail, cx| detail.load_all(cx));
-                                })),
-                        ),
-                )
-            })
+            .children(error)
             .child(
                 table(&self.table)
                     .rounded(theme.radius)
@@ -1144,7 +1151,8 @@ impl ArtistView {
         let playback = self.playback.clone();
         let opened = cx.entity().downgrade();
 
-        Picks::new(
+        let error = self.track_error(cx);
+        let picks = Picks::new(
             tag,
             tracks,
             self.playback.clone(),
@@ -1179,8 +1187,15 @@ impl ArtistView {
             playback.update(cx, |playback, cx| {
                 playback.start(queued.as_ref().clone(), place, from.clone(), cx)
             });
-        })
-        .into_any_element()
+        });
+
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .children(error)
+            .child(picks)
+            .into_any_element()
     }
 
     /// Opens the listener's favorites for this artist without adding songs to the page.
